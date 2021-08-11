@@ -1,6 +1,6 @@
 /*
- * mm.c - segregated free list malloc package for 32-bit. Implemented 
- * using first fit in the segregated free list.
+ * mm.c - explicit free list malloc package for 32-bit. Implemented 
+ * using first fit in free list.
  * 
  * HEADER-> 4 BYTES
  *          It will keep note of asize(asize which is multiple of 8) 
@@ -15,11 +15,10 @@
  *          to get the starting of block. One of the reason to choose min block
  *          size as 16.
  *
- * Segregated free lists ->
- *              We have 72 buckets for free lists. Based on asize we determine
- *              the bucket number (array_index). Maintaining 2 pointers (8 bytes) 
+ * Free list -> Finding first free block in the free list rather than in 
+ *              the complete list of blocks. Maintaining 2 pointers (8 bytes) 
  *              in free block using the unwanted data space. Using doubly
- *              linked list and free list insertion at the head.
+ *              linked list and free list insertion at the head(free_list_head).
  *              Reason to choose min block size as 16 bytes.
  *
  * min block size is 16 bytes - 
@@ -60,7 +59,7 @@
  ********************************************************/
 team_t team = {
     /* Team name */
-    "seg_free_list_dynamic_allocator",
+    "explicit_free_list_dynamic_allocator",
     /* First member's full name */
     "Ashwin",
     /* First member's email address */
@@ -76,7 +75,6 @@ team_t team = {
 #define WSIZE     4
 #define DSIZE     8
 #define CHUNKSIZE (1<<12)
-#define FREE_LIST_BUCKETS 72
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((unsigned int)(size) + (ALIGNMENT-1)) & ~0x7)
@@ -129,7 +127,7 @@ typedef struct free_list {
 
 /* private gloabal static variable which will always point to prologue block */
 static char *heap_listp;
-static free_list *free_list_head[FREE_LIST_BUCKETS];
+static free_list *free_list_head;
 static unsigned int free_blocks; /* Not using. Just in case */
 
 static void *extend_heap(size_t words);
@@ -139,8 +137,6 @@ static void free_list_insertion(void *bp);
 static void remove_from_free_list(void *bp);
 static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
-static int determine_array_index(size_t size);
-static void* find_first_available_free_block(int index, size_t asize);
 //static void print_heap();
 int mm_check(void);
 
@@ -156,12 +152,7 @@ int mm_check(void);
 int mm_init(void) {
   
   /* Create the initial empty heap */
-  int index = 0;
-  while (index < FREE_LIST_BUCKETS) {
-    free_list_head[index] = NULL;
-    index += 1;
-  }
-  
+  free_list_head = NULL;
   if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) {
     return -1;
   }
@@ -214,6 +205,7 @@ static void *extend_heap(size_t words) {
   }
   
   free_list_insertion(new_heap_block);
+  
   return new_heap_block; 
 }
 
@@ -262,72 +254,12 @@ static void *find_fit(size_t asize) {
   if (free_list_head == NULL) {
     return NULL;
   }
-  int index = determine_array_index(asize);
-  
-  /* searching free block of asize in the free list of bucket index */ 
-  free_list *free_list_traversal = free_list_head[index];
-  if (free_list_traversal) {
-    while (free_list_traversal != NULL) {
-      if (GET_SIZE(HDRP(free_list_traversal)) >= asize) {
-        return free_list_traversal;    
-      }
-      free_list_traversal = (free_list *)(free_list_traversal->next);
+  free_list *free_list_traversal = free_list_head;
+  while (free_list_traversal != NULL) {
+    if (GET_SIZE(HDRP(free_list_traversal)) >= asize) {
+      return free_list_traversal;    
     }
-  }
-
-  /* if free_list[index] doesn't have asize sized free block
-   * then looking for bigger size of free block starting from
-   * index bucket*/
-  
-  free_list_traversal = find_first_available_free_block(index + 1, asize);
-  return free_list_traversal;
-}
-
-static int determine_array_index(size_t size) {
-  unsigned int array_index;
-  if (size <= 1024u) {
-    array_index = (size % 16)? (((size + 8)/16) -1) : ((size/16) - 1);
-  return array_index;
-  }
-  
-  if (size > 1024u && size <= 2048u) {
-    array_index = 64;
-  
-  } else if (size > 2048u && size <= 4096u) {
-    array_index = 65;
-  
-  } else if(size > 4096u && size <= 8192u) {
-    array_index = 66;
-  
-  } else if (size > 8192u && size <= 16384u) {
-    array_index = 67;
-  
-  } else if (size > 16384u && size <= 32768u) {
-    array_index = 68;
-  
-  } else if (size > 32768u && size <= 65536u) {
-    array_index = 69;
-  
-  }else if (size > 65536u && size <= 131072u) {
-    array_index = 70;
-  
-  } else {
-    array_index = 71;
-  
-  }
-  return array_index;
-}
-
-static void* find_first_available_free_block(int index, size_t asize) {
-  
-  if (free_list_head[65] != NULL) {
-    return free_list_head[65];
-  }
-  while (index < FREE_LIST_BUCKETS) {
-    if (free_list_head[index]) {
-      return free_list_head[index];
-    }  
-    index += 1;
+    free_list_traversal = (free_list *)(free_list_traversal->next);
   }
   return NULL;
 }
@@ -344,51 +276,47 @@ static void free_list_insertion(void *free_block) {
   }
   
   free_list *new_free_block = (free_list *)free_block;
-  size_t size = GET_SIZE(HDRP(free_block));
-  unsigned int index = determine_array_index(size);
   
-  if (free_list_head[index] == NULL) {
+  if (free_list_head == NULL) {
     
     new_free_block->prev = NULL;
     new_free_block->next = NULL;
-    free_list_head[index] = new_free_block;
+    free_list_head = new_free_block;
     free_blocks = 1;
 
   }else {
-      new_free_block->next = (char *)free_list_head[index];
+      new_free_block->next = (char *)free_list_head;
       new_free_block->prev = NULL;
-      free_list_head[index]->prev = (char *)new_free_block;
-      free_list_head[index] = new_free_block;
+      free_list_head->prev = (char *)new_free_block;
+      free_list_head = new_free_block;
       free_blocks++;
   }
 }
 
-/* free_block_ptr is a free block address 
- * removing free block ptr from free_list_head[index]
+/* bp is a free block address 
+ * removing free block bp from free_list
  * not manipulating header and footer of free block*/
 
 static void remove_from_free_list(void *free_block_ptr) {
   
-  int index = determine_array_index(GET_SIZE(HDRP(free_block_ptr)));
-
   free_list *curr = (free_list *)free_block_ptr;
   free_list *curr_prev = (free_list *)(curr->prev);
   free_list *curr_next = (free_list *)(curr->next);
   
-  if ((curr_prev == NULL) && (curr_next == NULL)) {
+  if ((curr->prev == NULL) && (curr->next == NULL)) {
     /* one free block in free_list which is free_list_head */ 
-    free_list_head[index] = NULL;
+    free_list_head = NULL;
 
-  } else if ((curr_prev == NULL) && (curr_next)) {
+  } else if ((curr->prev == NULL) && (curr->next)) {
     /* 2 free blocks in free_list and want to remove 1st block */
     curr_next->prev = NULL;
-    free_list_head[index] = curr_next;
+    free_list_head = curr_next;
 
-  } else if ((curr_next == NULL) && (curr_prev)) {
+  } else if ((curr->next == NULL) && (curr->prev)) {
     /* last block in free_list removal */
     curr_prev->next = NULL;
 
-  } else if ((curr_prev) && (curr_next)) {
+  } else if ((curr->prev) && (curr->next)) {
     /* middle block in free_list */
     curr_next->prev = curr->prev;
     curr_prev->next = curr->next;
@@ -692,14 +620,12 @@ int mm_check(void) {
       }
 
       /* checking if free block is part of free list */
-      int index = determine_array_index(GET_SIZE(HDRP(mem_block)));
-      free_list *traverse_free_list = free_list_head[index];
+      free_list *traverse_free_list = free_list_head;
       int free_block_present = 0;
       
       while (traverse_free_list != NULL) {
         if (((free_list *)mem_block) == traverse_free_list) {
           free_block_present = 1;
-          printf("its in index %d and asize is %u\n",index, GET_SIZE(HDRP(mem_block)));
         }
         traverse_free_list = (free_list *)(traverse_free_list->next);
       }

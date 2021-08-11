@@ -320,9 +320,6 @@ static int determine_array_index(size_t size) {
 
 static void* find_first_available_free_block(int index, size_t asize) {
   
-  if (free_list_head[65] != NULL) {
-    return free_list_head[65];
-  }
   while (index < FREE_LIST_BUCKETS) {
     if (free_list_head[index]) {
       return free_list_head[index];
